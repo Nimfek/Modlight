@@ -1,0 +1,32 @@
+node_modules
+.next
+dist
+.git
+.github
+data
+*.log
+.env
+.env.*
+!.env.example
+tests
+docs
+scripts
+# ...except every script build:server compiles. esbuild resolves these
+# from the build CONTEXT, so a script excluded here fails the image build
+# with "could not resolve" long before anything runs.
+!scripts/fix-mime-types.ts
+# Publishing a release: ingests the installer through the same finalizeUpload the
+# ShareX endpoint uses, then moves the release pointer. Needs to be IN the image,
+# because it runs against the production database from inside the container.
+!scripts/publish-release.ts
+# Backfilling duration/fps/dimensions for video rows. Missing from this list,
+# it broke the image build on 28.09.2026 with a green local build - the
+# test tests/unit/dockerignore-scripts.test.ts now fails instead.
+!scripts/backfill-av-metadata.ts
+# ...and the bundle guard, which build:server RUNS (not compiles) straight after
+# esbuild. Left out, `pnpm build` inside the image dies on a missing file — which
+# is exactly how this line came to be written.
+!scripts/check-server-bundle.mjs
+README.md
+CLAUDE.md
+AGENTS.md

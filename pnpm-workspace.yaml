@@ -1,0 +1,18 @@
+# Allow native/build scripts only for the packages that genuinely need them.
+onlyBuiltDependencies:
+  - sharp
+  - esbuild
+# Dev-only tooling: their postinstall scripts are not needed for the app to run,
+# and listing them explicitly keeps pnpm's strict build-script check quiet.
+ignoredBuiltDependencies:
+  - unrs-resolver
+  - '@parcel/watcher'
+  - '@swc/core'
+  - msw
+
+# Force kysely onto the 0.28.x line: @better-auth/kysely-adapter (a transitive
+# dep of better-auth) imports DEFAULT_MIGRATION_TABLE / DEFAULT_MIGRATION_LOCK_TABLE
+# which kysely 0.29.2 no longer exports → `next build` externals-tracing fails.
+# The adapter declares ^0.28.17 || ^0.29.0; 0.28.x still exports them.
+overrides:
+  kysely: ^0.28.17

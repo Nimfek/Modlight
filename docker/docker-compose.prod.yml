@@ -1,0 +1,130 @@
+# Modlight production stack: app + PostgreSQL, plus Caddy for automatic HTTPS.
+#
+# You do not run this file by name. ./setup.sh writes .env in the repository
+# root, and that .env tells Compose which files to load (COMPOSE_FILE) and
+# whether the bundled Caddy runs (COMPOSE_PROFILES). From the repository root:
+#
+#   ./setup.sh
+#   docker compose up -d --build
+#
+# Database migrations run automatically every time the app container starts.
+# The first account to register becomes the administrator.
+#
+# ALREADY RUNNING A REVERSE PROXY (nginx, Traefik, aaPanel, an existing Caddy)?
+# Answer "my own reverse proxy" in setup.sh: Caddy is left out and the app is
+# published on 127.0.0.1 only (docker-compose.expose.yml). Two things matter
+# more than anything else for large uploads - see docs/deployment.md:
+#   - no request-body size limit       (nginx: client_max_body_size 0)
+#   - no request buffering             (nginx: proxy_request_buffering off)
+# and forward the real client address as X-Real-IP, overwriting whatever the
+# client sent. The rate limits trust that header and nothing else.
+
+# An explicit project name. Without it Compose derives one from this file's
+# directory - "docker" - which any other stack kept in a docker/ folder would
+# share, and could then adopt or remove these volumes.
+name: modlight
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      # Next bakes these into the build, so they are passed as build arguments too.
+      args:
+        APP_URL: ${APP_URL}
+        APP_DOMAINS: ${APP_DOMAINS:-}
+        SHORTLINK_URL: ${SHORTLINK_URL:-}
+    restart: always
+    env_file: ../.env
+    environment:
+      NODE_ENV: production
+      # Always 3000 inside the container, whatever PORT says in .env.
+      PORT: "3000"
+      DATABASE_URL: postgresql://modlight:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/modlight
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      # These three MUST stay on one filesystem. Finishing an upload renames the
+      # temporary file into storage, and a rename cannot cross devices - split
+      # them across disks and every upload fails AFTER all its bytes arrived.
+      STORAGE_LOCAL_PATH: /app/data/storage
+      TUS_TMP_PATH: /app/data/tus
+      UPLOAD_TMP_PATH: /app/data/tmp
+    volumes:
+      # All uploaded files live here: the named volume "appdata" by default, or
+      # a host directory when MODLIGHT_DATA is set (e.g. a dedicated disk,
+      # MODLIGHT_DATA=/mnt/storage/modlight). A host directory must be owned by
+      # uid 1000, which is what the app runs as.
+      - ${MODLIGHT_DATA:-appdata}:/app/data
+      # Next's image-optimisation cache. Must be writable by uid 1000.
+      - nextcache:/app/.next/cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "3000"
+
+    # ── Hardening ──────────────────────────────────────────────────────────────
+    # This container ingests untrusted files and decodes them with libvips and
+    # ffmpeg. It holds no privilege it cannot justify.
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Resource ceilings: without them one pathological file (a decompression
+    # bomb, or a burst of conversions) can exhaust host memory. Raise these on a
+    # bigger machine; the app sizes its own worker pools from the cgroup limit.
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
+
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: modlight
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: modlight
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U modlight -d modlight"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  caddy:
+    image: caddy:2-alpine
+    # Runs only with COMPOSE_PROFILES=caddy, which setup.sh writes when you pick
+    # the built-in HTTPS. Behind your own proxy it is simply never started.
+    profiles: ["caddy"]
+    restart: unless-stopped
+    environment:
+      # Every hostname Caddy obtains a certificate for and forwards to the app,
+      # comma-separated. setup.sh fills it from APP_URL, APP_DOMAINS and
+      # SHORTLINK_URL, so docker/Caddyfile never needs editing.
+      CADDY_SITES: ${CADDY_SITES:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - app
+
+volumes:
+  appdata:
+  pgdata:
+  nextcache:
+  caddydata:
+  caddyconfig:

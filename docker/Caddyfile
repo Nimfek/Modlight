@@ -1,0 +1,47 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Caddy reverse proxy for Modlight — tuned for RELIABLE LARGE-FILE UPLOADS.
+# The site list comes from CADDY_SITES in .env (written by setup.sh), e.g.
+# "files.example.com, f.example.com". Caddy obtains a certificate for each name
+# automatically; the DNS records must already point at this machine.
+# ──────────────────────────────────────────────────────────────────────────
+
+{$CADDY_SITES:localhost} {
+	encode zstd gzip
+
+	# CRITICAL for large uploads:
+	#  - no request-body size cap (the app enforces its own limit)
+	#  - long timeouts so multi-GB / slow-link uploads are never cut off
+	#  - Caddy streams the body to the app (it does not buffer the whole file)
+	request_body {
+		max_size 0
+	}
+
+	reverse_proxy app:3000 {
+		# Long read/write so big single-POST (ShareX) and tus PATCHes survive slow links.
+		transport http {
+			read_timeout 0
+			write_timeout 0
+			dial_timeout 30s
+		}
+		# Forward the real client info.
+		#
+		# X-Real-IP is NOT optional. It is the only header the application will
+		# believe when it decides who a caller is (lib/password.ts clientIp, and
+		# better-auth's own limiter via `ipAddressHeaders`), and `header_up`
+		# OVERWRITES whatever the client sent. Without this line the visitor's own
+		# X-Real-IP passes straight through, so anybody can hand themselves a new
+		# identity — and therefore a fresh bucket — on every single request. That
+		# turns every throttle in the app off at once: sign-in, registration key,
+		# file-password unlock and confirmation-mail resend.
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+		header_up Host {host}
+	}
+}
+
+# Local/dev (HTTP only) example — uncomment to test without a domain:
+# :80 {
+# 	request_body { max_size 0 }
+# 	reverse_proxy app:3000
+# }
